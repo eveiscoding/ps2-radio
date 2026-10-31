@@ -148,9 +148,9 @@ const audio=$('#audio');
 const ranges={FM:{min:76,max:108,step:.1,unit:'MHz'},AM:{min:530,max:1600,step:1,unit:'kHz'}};
 Object.values(stations).forEach(list=>list.sort((a,b)=>a.freq-b.freq));
 let band='FM',vol=.55,token=0,powered=false,playbackState='idle',streamRequest=null,playbackNotice=null,audioUnlocked=false;
-let radioContext=null,noiseGain=null,noiseSource=null;
+let radioContext=null,noiseGain=null,noiseSource=null,streamGain=null,streamSource=null;
 const frequencies={FM:97.4,AM:639};
-audio.volume=vol;
+applyStreamVolume();
 const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 function status(s){$('#status').textContent=s}
 function playbackFeedback(kind,message=''){
@@ -206,6 +206,29 @@ function updateNoise(){
  noiseGain.gain.cancelScheduledValues(radioContext.currentTime);
  noiseGain.gain.setTargetAtTime(target,radioContext.currentTime,.012);
 }
+// iOS Safari ignores HTMLMediaElement.volume; control decoded audio with GainNode.
+function applyStreamVolume(){
+  if(streamGain){
+    audio.volume=1;
+    streamGain.gain.cancelScheduledValues(radioContext.currentTime);
+    streamGain.gain.setTargetAtTime(vol,radioContext.currentTime,.012);
+  }else audio.volume=vol;
+}
+function prepareStreamOutput(){
+  const Context=window.AudioContext||window.webkitAudioContext;
+  if(!Context)return;
+  if(!radioContext)radioContext=new Context();
+  if(!streamSource){
+    // CORS must be enabled before assigning any live-stream URL.
+    audio.crossOrigin='anonymous';
+    streamSource=radioContext.createMediaElementSource(audio);
+    streamGain=radioContext.createGain();
+    streamGain.gain.value=vol;
+    streamSource.connect(streamGain);streamGain.connect(radioContext.destination);
+  }
+  applyStreamVolume();
+  if(radioContext.state==='suspended')radioContext.resume().catch(()=>{});
+}
 async function startElectricalNoise(){
  const Context=window.AudioContext||window.webkitAudioContext;
  if(!Context)throw Error('此瀏覽器不支持電流聲');
@@ -245,7 +268,7 @@ function setFrequency(value,autoplay=false){
  if(autoplay){feedbackSound('tick');queueTuning();}
 }
 function setBand(next){if(next===band)return;feedbackSound('click');band=next;halt();render();status('已切換 '+band+' · 點擊旋鈕打開調頻')}
-function setVolume(value){const old=vol;vol=clamp(value,0,1);if(Math.floor(old*20)!==Math.floor(vol*20))feedbackSound('tick');audio.volume=vol;updateNoise();render()}
+function setVolume(value){const old=vol;vol=clamp(value,0,1);if(Math.floor(old*20)!==Math.floor(vol*20))feedbackSound('tick');applyStreamVolume();updateNoise();render()}
 function seek(direction){const resume=powered&&(playbackState!=='idle'||tuningTimer!==null);const list=stations[band],index=list.indexOf(current());const station=list[(index+(direction>0?1:-1)+list.length)%list.length];setFrequency(station.freq);if(resume&&playbackState==='idle')startStation(current())}
 $('#back').onclick=()=>seek(-1);$('#forward').onclick=()=>seek(1);
 // One owner per gesture: capture keeps dragging active outside the control;
@@ -409,7 +432,7 @@ function playStream(url,signal){
   const abort=()=>finish(cancelError());
   const timer=setTimeout(()=>finish(Error('音源連接超時')),18000);
   audio.addEventListener('playing',ready);audio.addEventListener('error',error);signal.addEventListener('abort',abort,{once:true});
-  audio.src=url;audio.volume=vol;audio.load();
+  audio.src=url;applyStreamVolume();audio.load();
   try{const promise=audio.play();if(promise&&typeof promise.then==='function')promise.then(ready,finish)}catch(e){finish(e)}
  });
 }
